@@ -8,11 +8,11 @@
 #include "effects/Filter2D.h"
 #include "effects/Distortion2D.h"
 #include "tracking/FaceTracker.h"
-#include "tracking/SegmentationProvider.h"
+#include "tracking/MulticlassSegmenter.h"
 
 std::unique_ptr<EffectManager> g_efx;
 std::unique_ptr<FaceTracker> g_face;
-std::unique_ptr<SegmentationProvider> g_segmenter;  // ADD THIS
+std::unique_ptr<MulticlassSegmenter> g_segmenter;
 cv::VideoCapture g_cam;
 GLuint g_tex = 0;
 const int W = 1280, H = 720;
@@ -93,8 +93,8 @@ int main() {
     g_face->init();
 
     // Initialize segmentation (optional - doesn't break if fails)
-    g_segmenter = std::make_unique<SegmentationProvider>();
-    if (!g_segmenter->init("assets/models/selfie_multiclass.onnx")) {
+    g_segmenter = std::make_unique<MulticlassSegmenter>();
+    if (!g_segmenter->initialize("assets/models/selfie_multiclass.onnx")) {
         std::cout << "[WARNING] Segmentation model not loaded. Running without AI segmentation." << std::endl;
         g_segmenter.reset(); // Clear if failed
     } else {
@@ -176,6 +176,7 @@ void main() {
         // 1. RUN SEGMENTATION (if available)
         if (g_segmenter) {
             auto masks = g_segmenter->segment(frame);
+            frame.setTo(cv::Scalar(0,255,0), masks.hair);
             // TODO: Use masks.hair, masks.clothes, etc. for effects
             // For now, just print debug info
             static int frameCount = 0;

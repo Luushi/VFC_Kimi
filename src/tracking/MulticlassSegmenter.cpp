@@ -13,7 +13,8 @@ bool MulticlassSegmenter::initialize(const std::string& modelPath) {
         sessionOptions.SetIntraOpNumThreads(4);
         sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         
-        session_ = std::make_unique<Ort::Session>(env_, modelPath.c_str(), sessionOptions);
+        std::wstring wpath(modelPath.begin(), modelPath.end());
+        session_ = std::make_unique<Ort::Session>(env_, wpath.c_str(), sessionOptions);
         
         // Print model info
         Ort::AllocatorWithDefaultOptions allocator;
@@ -58,7 +59,7 @@ std::array<cv::Mat, 6> MulticlassSegmenter::postprocess(const float* output, int
             
             for (int c = 0; c < numClasses_; c++) {
                 // NCHW format: [batch][channel][height][width]
-                float prob = output[c * inputSize_ * inputSize_ + y * inputSize_ + x];
+                float prob = output[(y * inputSize_ * numClasses_) + (x * numClasses_) + c];
                 if (prob > maxProb) {
                     maxProb = prob;
                     maxClass = c;
@@ -105,15 +106,15 @@ MulticlassMasks MulticlassSegmenter::segment(const cv::Mat& frame) {
         cv::Mat preprocessed = preprocess(frame);
         
         // Create input tensor [1, 3, 256, 256]
-        std::vector<int64_t> inputShape = {1, 3, inputSize_, inputSize_};
+        std::vector<int64_t> inputShape = {1, inputSize_, inputSize_, 3};
         std::vector<float> inputTensorValues(3 * inputSize_ * inputSize_);
         
         // Fill tensor (NCHW format)
-        for (int c = 0; c < 3; c++) {
-            for (int h = 0; h < inputSize_; h++) {
-                for (int w = 0; w < inputSize_; w++) {
-                    cv::Vec3f pixel = preprocessed.at<cv::Vec3f>(h, w);
-                    inputTensorValues[c * inputSize_ * inputSize_ + h * inputSize_ + w] = pixel[c];
+        for (int h = 0; h < inputSize_; h++) {
+            for (int w = 0; w < inputSize_; w++) {
+                cv::Vec3f pixel = preprocessed.at<cv::Vec3f>(h, w);
+                for (int c = 0; c < 3; c++) {
+                    inputTensorValues[h * inputSize_ * 3 + w * 3 + c] = pixel[c];
                 }
             }
         }
