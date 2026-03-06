@@ -38,6 +38,9 @@ private:
     const int inputSize_ = 256;
     const int numClasses_ = 6;
     
+    std::string inputName_;
+    std::string outputName_;
+    
     bool useTemporal_ = true;
     float smoothAlpha_ = 0.7f;
     std::array<cv::Mat, 6> prevMasks_;

@@ -115,11 +115,11 @@ if(NOT onnxruntime_FOUND AND EXISTS ${ONNX_DIR})
         ${ONNX_DIR}/lib/onnxruntime.dll
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/
 
-        COMMAND ${CMAKE_COMMAND} -E copy_if_exists
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${ONNX_DIR}/lib/onnxruntime_providers_cuda.dll
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/
 
-        COMMAND ${CMAKE_COMMAND} -E copy_if_exists
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${ONNX_DIR}/lib/onnxruntime_providers_shared.dll
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/
     )

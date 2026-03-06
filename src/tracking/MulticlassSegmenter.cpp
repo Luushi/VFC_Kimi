@@ -1,5 +1,7 @@
 #include "MulticlassSegmenter.h"
 #include <iostream>
+#include <vector>
+#include <string>
 
 MulticlassSegmenter::MulticlassSegmenter() 
     : env_(ORT_LOGGING_LEVEL_WARNING, "MulticlassSeg"),
@@ -16,11 +18,17 @@ bool MulticlassSegmenter::initialize(const std::string& modelPath) {
         std::wstring wpath(modelPath.begin(), modelPath.end());
         session_ = std::make_unique<Ort::Session>(env_, wpath.c_str(), sessionOptions);
         
-        // Print model info
+        // [FIX APPLIED] Query names ONCE and deep copy them safely into strings
         Ort::AllocatorWithDefaultOptions allocator;
+        auto inputNameAlloc = session_->GetInputNameAllocated(0, allocator);
+        auto outputNameAlloc = session_->GetOutputNameAllocated(0, allocator);
+        
+        inputName_ = inputNameAlloc.get();
+        outputName_ = outputNameAlloc.get();
+        
         std::cout << "Model loaded: " << modelPath << std::endl;
-        std::cout << "Input name: " << session_->GetInputNameAllocated(0, allocator) << std::endl;
-        std::cout << "Output name: " << session_->GetOutputNameAllocated(0, allocator) << std::endl;
+        std::cout << "Cached Input name: " << inputName_ << std::endl;
+        std::cout << "Cached Output name: " << outputName_ << std::endl;
         
         return true;
     } catch (const Ort::Exception& e) {
@@ -37,8 +45,7 @@ cv::Mat MulticlassSegmenter::preprocess(const cv::Mat& frame) {
     cv::Mat rgb;
     cv::cvtColor(resized, rgb, cv::COLOR_BGR2RGB);
     
-    // Normalize to [-1, 1] or [0, 1] depending on model
-    // MediaPipe typically uses [0, 1]
+    // Normalize to [0, 1] 
     cv::Mat floatMat;
     rgb.convertTo(floatMat, CV_32F, 1.0 / 255.0);
     
@@ -48,8 +55,7 @@ cv::Mat MulticlassSegmenter::preprocess(const cv::Mat& frame) {
 std::array<cv::Mat, 6> MulticlassSegmenter::postprocess(const float* output, int origW, int origH) {
     std::array<cv::Mat, 6> masks;
     
-    // Output is [1, 6, 256, 256] - softmax probabilities per class
-    // Find argmax for each pixel
+    // Output is [1, 256, 256, 6] (NHWC) - softmax probabilities per class
     cv::Mat segMap(inputSize_, inputSize_, CV_8U);
     
     for (int y = 0; y < inputSize_; y++) {
@@ -58,7 +64,7 @@ std::array<cv::Mat, 6> MulticlassSegmenter::postprocess(const float* output, int
             float maxProb = -1.0f;
             
             for (int c = 0; c < numClasses_; c++) {
-                // NCHW format: [batch][channel][height][width]
+                // NHWC format extraction mapping
                 float prob = output[(y * inputSize_ * numClasses_) + (x * numClasses_) + c];
                 if (prob > maxProb) {
                     maxProb = prob;
@@ -105,11 +111,11 @@ MulticlassMasks MulticlassSegmenter::segment(const cv::Mat& frame) {
         // Preprocess
         cv::Mat preprocessed = preprocess(frame);
         
-        // Create input tensor [1, 3, 256, 256]
+        // Create input tensor [1, 256, 256, 3] (NHWC format)
         std::vector<int64_t> inputShape = {1, inputSize_, inputSize_, 3};
         std::vector<float> inputTensorValues(3 * inputSize_ * inputSize_);
         
-        // Fill tensor (NCHW format)
+        // Fill tensor mapping correctly to NHWC
         for (int h = 0; h < inputSize_; h++) {
             for (int w = 0; w < inputSize_; w++) {
                 cv::Vec3f pixel = preprocessed.at<cv::Vec3f>(h, w);
@@ -123,15 +129,14 @@ MulticlassMasks MulticlassSegmenter::segment(const cv::Mat& frame) {
             memoryInfo_, inputTensorValues.data(), inputTensorValues.size(), 
             inputShape.data(), inputShape.size());
         
-        // Get input/output names
-        Ort::AllocatorWithDefaultOptions allocator;
-        const char* inputName = session_->GetInputNameAllocated(0, allocator).get();
-        const char* outputName = session_->GetOutputNameAllocated(0, allocator).get();
+        // [FIX APPLIED] Safely pass the cached string names as arrays
+        std::vector<const char*> inputNames = { inputName_.c_str() };
+        std::vector<const char*> outputNames = { outputName_.c_str() };
         
         // Run inference
         auto outputTensors = session_->Run(Ort::RunOptions{nullptr}, 
-                                           &inputName, &inputTensor, 1,
-                                           &outputName, 1);
+                                           inputNames.data(), &inputTensor, 1,
+                                           outputNames.data(), 1);
         
         // Process output
         float* outputData = outputTensors[0].GetTensorMutableData<float>();
