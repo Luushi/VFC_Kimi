@@ -1,0 +1,11 @@
+build/
+Debug/
+Release/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.onnx
+*.pth
+*.pt
+*.tflite
