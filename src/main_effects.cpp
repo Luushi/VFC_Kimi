@@ -3,6 +3,7 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <memory>
+#include <chrono>
 
 #include "effects/EffectManager.h"
 #include "effects/Filter2D.h"
@@ -16,6 +17,11 @@ std::unique_ptr<MulticlassSegmenter> g_segmenter;
 cv::VideoCapture g_cam;
 GLuint g_tex = 0;
 const int W = 1280, H = 720;
+
+// Performance tracking
+std::chrono::high_resolution_clock::time_point g_lastFrameTime;
+float g_currentFPS = 60.0f;
+int g_frameCount = 0;
 
 void fb_cb(GLFWwindow* win, int w, int h) { glViewport(0, 0, w, h); }
 
@@ -57,8 +63,49 @@ void key_cb(GLFWwindow* win, int key, int sc, int act, int mods) {
             g_efx->clear();
             std::cout << "[Cleared] All Effects" << std::endl;
         }
+        if (key == GLFW_KEY_T) {
+            // Toggle temporal smoothing
+            if (g_segmenter) {
+                static bool tempEnabled = true;
+                tempEnabled = !tempEnabled;
+                g_segmenter->enableTemporalSmoothing(tempEnabled);
+                std::cout << "[Toggle] Temporal smoothing: " << (tempEnabled ? "ON" : "OFF") << std::endl;
+            }
+        }
+        if (key == GLFW_KEY_R) {
+            // Toggle edge refinement
+            if (g_segmenter) {
+                static bool refineEnabled = true;
+                refineEnabled = !refineEnabled;
+                g_segmenter->setEdgeRefinement(refineEnabled);
+                std::cout << "[Toggle] Edge refinement: " << (refineEnabled ? "ON" : "OFF") << std::endl;
+            }
+        }
         if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(win, 1);
     }
+}
+
+// Apply green screen effect using segmentation mask
+void applySegmentationEffect(cv::Mat& frame, const MulticlassMasks& masks) {
+    // Example: Replace background with green screen
+    cv::Mat greenBg(frame.size(), frame.type(), cv::Scalar(0, 255, 0));
+    
+    // Use person mask for compositing
+    cv::Mat invPerson;
+    cv::bitwise_not(masks.person, invPerson);
+    
+    cv::Mat bgPart;
+    cv::bitwise_and(greenBg, greenBg, bgPart, invPerson);
+    
+    cv::Mat fgPart;
+    cv::bitwise_and(frame, frame, fgPart, masks.person);
+    
+    cv::add(bgPart, fgPart, frame);
+    
+    // Optional: Highlight hair in red for debugging
+    // cv::Mat hairHighlight;
+    // cv::bitwise_and(frame, cv::Scalar(0, 0, 255), hairHighlight, masks.hair);
+    // cv::add(frame, hairHighlight, frame);
 }
 
 int main() {
@@ -92,13 +139,21 @@ int main() {
     g_face = std::make_unique<FaceTracker>();
     g_face->init();
 
-    // Initialize segmentation (optional - doesn't break if fails)
+    // Initialize segmentation with optimized settings
     g_segmenter = std::make_unique<MulticlassSegmenter>();
     if (!g_segmenter->initialize("assets/models/selfie_multiclass.onnx")) {
         std::cout << "[WARNING] Segmentation model not loaded. Running without AI segmentation." << std::endl;
-        g_segmenter.reset(); // Clear if failed
+        g_segmenter.reset();
     } else {
         std::cout << "[OK] AI Segmentation loaded successfully!" << std::endl;
+        
+        // Configure for streamer-friendly performance
+        g_segmenter->setSmoothingFactor(0.9f);        // Less lag (was 0.7)
+        g_segmenter->setConfidenceThreshold(0.6f);   // Reduce flicker
+        g_segmenter->setSkipFrames(2);               // Process every 2nd frame
+        g_segmenter->setEdgeRefinement(true);        // Smooth edges
+        
+        std::cout << "[Config] Optimized for streaming: 30fps inference, 60fps output" << std::endl;
     }
 
     // Terminal Menu
@@ -110,6 +165,8 @@ int main() {
     std::cout << "  3 = Twirl Distortion" << std::endl;
     std::cout << "  4 = Barrel Distortion" << std::endl;
     std::cout << "  C = Clear All Effects" << std::endl;
+    std::cout << "  T = Toggle Temporal Smoothing" << std::endl;
+    std::cout << "  R = Toggle Edge Refinement" << std::endl;
     std::cout << "  ESC = Exit Program" << std::endl;
     std::cout << "-------------------------------" << std::endl;
 
@@ -162,26 +219,38 @@ void main() {
     glAttachShader(prog, fsh); 
     glLinkProgram(prog);
     
-    // Clean up shaders
     glDeleteShader(vsh);
     glDeleteShader(fsh);
 
     cv::Mat frame, frameRGB;
+    g_lastFrameTime = std::chrono::high_resolution_clock::now();
 
     while (!glfwWindowShouldClose(win)) {
+        auto frameStart = std::chrono::high_resolution_clock::now();
+        
         glfwPollEvents();
         g_cam >> frame;
         if (frame.empty()) continue;
 
-        // 1. RUN SEGMENTATION (if available)
+        // 1. RUN SEGMENTATION (optimized with skip-frame processing)
+        MulticlassMasks masks;
+        bool hasSegmentation = false;
+        
         if (g_segmenter) {
-            auto masks = g_segmenter->segment(frame);
-            frame.setTo(cv::Scalar(0,255,0), masks.hair);
-            // TODO: Use masks.hair, masks.clothes, etc. for effects
-            // For now, just print debug info
-            static int frameCount = 0;
-            if (++frameCount % 30 == 0) {
-                std::cout << "[Segmentation] Hair pixels: " << cv::countNonZero(masks.hair) << std::endl;
+            masks = g_segmenter->segment(frame);
+            hasSegmentation = true;
+            
+            // Apply segmentation effect (green screen example)
+            applySegmentationEffect(frame, masks);
+            
+            // Debug info every 60 frames
+            static int debugCount = 0;
+            if (++debugCount % 60 == 0) {
+                float inferenceTime = g_segmenter->getLastInferenceTimeMs();
+                int effectiveFps = g_segmenter->getEffectiveFPS();
+                std::cout << "[Perf] Inference: " << inferenceTime << "ms, "
+                          << "Segmentation FPS: " << effectiveFps << ", "
+                          << "Render FPS: " << static_cast<int>(g_currentFPS) << std::endl;
             }
         }
 
@@ -189,7 +258,6 @@ void main() {
         std::vector<FaceTracker::Face> faces;
         if (g_face && g_face->detect(frame, faces)) {
             for (auto& f : faces) {
-                // Draw face box on CPU frame (will be visible in output)
                 cv::rectangle(frame, f.box, cv::Scalar(0, 255, 0), 2);
                
                 FaceData d;
@@ -207,7 +275,8 @@ void main() {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frameRGB.cols, frameRGB.rows, 0, GL_RGB, GL_UNSIGNED_BYTE, frameRGB.data);
        
         // 4. RENDER EFFECTS
-        g_efx->update(0.016f); // 60 FPS delta time
+        float dt = 1.0f / g_currentFPS;
+        g_efx->update(dt);
         uint32_t finalTex = g_efx->render(g_tex, frame.cols, frame.rows);
        
         // 5. DRAW TO SCREEN
@@ -216,11 +285,16 @@ void main() {
         glUseProgram(prog);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, finalTex);
-        glUniform1i(glGetUniformLocation(prog, "tex"), 0); // Set uniform
+        glUniform1i(glGetUniformLocation(prog, "tex"), 0);
         glBindVertexArray(vao);
         glDrawArrays(GL_TRIANGLES, 0, 6);
        
         glfwSwapBuffers(win);
+        
+        // Calculate FPS
+        auto frameEnd = std::chrono::high_resolution_clock::now();
+        float frameTime = std::chrono::duration<float, std::milli>(frameEnd - frameStart).count();
+        g_currentFPS = 1000.0f / frameTime;
     }
     
     glfwTerminate();

@@ -19,6 +19,23 @@ find_package(OpenCV CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
 
+# Check for OpenCV contrib modules (optional but recommended)
+if(OpenCV_FOUND)
+    message(STATUS "OpenCV version: ${OpenCV_VERSION}")
+    message(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
+    
+    # Check for ximgproc (guided filter)
+    find_library(OPENCV_XIMGPROC opencv_ximgproc 
+        PATHS ${OpenCV_DIR}/lib ${OpenCV_DIR}/x64/vc16/lib
+        NO_DEFAULT_PATH)
+    if(OPENCV_XIMGPROC)
+        message(STATUS "OpenCV ximgproc found: ${OPENCV_XIMGPROC}")
+        add_definitions(-DHAVE_OPENCV_XIMGPROC)
+    else()
+        message(STATUS "OpenCV ximgproc not found, using bilateral filter fallback")
+    endif()
+endif()
+
 # --------------------------------------------------
 # ONNX Runtime
 # --------------------------------------------------
@@ -61,7 +78,8 @@ set(SOURCES
     src/effects/EffectManager.cpp
 
     src/tracking/FaceTracker.cpp
-    src/tracking/MulticlassSegmenter.cpp   # ← new segmentation system
+    src/tracking/MulticlassSegmenter.cpp
+    src/tracking/EdgeAwareFilter.cpp  # <-- NEW: Edge refinement
 
     src/camera/WebcamCapture.cpp
     src/core/Window.cpp
@@ -89,6 +107,11 @@ target_link_libraries(${PROJECT_NAME}
     OpenGL::GL
     ${OpenCV_LIBS}
 )
+
+# Add ximgproc if available
+if(OPENCV_XIMGPROC)
+    target_link_libraries(${PROJECT_NAME} ${OPENCV_XIMGPROC})
+endif()
 
 # ONNX Runtime linking
 if(onnxruntime_FOUND)
@@ -123,4 +146,15 @@ if(NOT onnxruntime_FOUND AND EXISTS ${ONNX_DIR})
         ${ONNX_DIR}/lib/onnxruntime_providers_shared.dll
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/
     )
+endif()
+
+# --------------------------------------------------
+# Enable OpenMP for parallel processing (optional but recommended)
+# --------------------------------------------------
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP enabled for parallel processing")
+else()
+    message(STATUS "OpenMP not found, using single-threaded processing")
 endif()

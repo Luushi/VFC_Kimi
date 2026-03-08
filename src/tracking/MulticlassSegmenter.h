@@ -3,6 +3,7 @@
 #include <onnxruntime_cxx_api.h>
 #include <array>
 #include <string>
+#include <chrono>
 
 struct MulticlassMasks {
     cv::Mat background;  // Class 0
@@ -16,6 +17,10 @@ struct MulticlassMasks {
     cv::Mat person;      // All non-background
     cv::Mat skin;        // faceSkin + bodySkin
     cv::Mat fullBody;    // All except background
+    
+    // Soft masks (for alpha blending)
+    cv::Mat hairSoft;
+    cv::Mat personSoft;
 };
 
 class MulticlassSegmenter {
@@ -26,9 +31,16 @@ public:
     bool initialize(const std::string& modelPath);
     MulticlassMasks segment(const cv::Mat& frame);
     
-    // Temporal smoothing for video
+    // Configuration
     void enableTemporalSmoothing(bool enable) { useTemporal_ = enable; }
-    void setSmoothingFactor(float alpha) { smoothAlpha_ = alpha; }
+    void setSmoothingFactor(float alpha) { defaultAlpha_ = alpha; }
+    void setConfidenceThreshold(float thresh) { confidenceThreshold_ = thresh; }
+    void setSkipFrames(int skip) { processEveryN_ = skip; }
+    void setEdgeRefinement(bool enable) { useEdgeRefinement_ = enable; }
+    
+    // Performance stats
+    float getLastInferenceTimeMs() const { return lastInferenceTimeMs_; }
+    int getEffectiveFPS() const { return effectiveFps_; }
     
 private:
     Ort::Env env_;
@@ -41,10 +53,40 @@ private:
     std::string inputName_;
     std::string outputName_;
     
+    // Temporal smoothing parameters
     bool useTemporal_ = true;
-    float smoothAlpha_ = 0.7f;
+    float defaultAlpha_ = 0.9f;  // Changed from 0.7 to reduce lag
+    float motionThreshold_ = 15.0f; // Pixel difference for motion detection
     std::array<cv::Mat, 6> prevMasks_;
+    cv::Mat prevFrameGray_;
     
+    // Confidence thresholding
+    float confidenceThreshold_ = 0.6f;
+    
+    // Skip-frame processing
+    int processEveryN_ = 2; // Process every 2nd frame
+    int frameCount_ = 0;
+    MulticlassMasks cachedResult_;
+    bool hasCachedResult_ = false;
+    
+    // Edge refinement
+    bool useEdgeRefinement_ = true;
+    
+    // Performance tracking
+    float lastInferenceTimeMs_ = 0.0f;
+    int effectiveFps_ = 30;
+    std::chrono::high_resolution_clock::time_point lastProcessTime_;
+    
+    // Internal methods
     cv::Mat preprocess(const cv::Mat& frame);
-    std::array<cv::Mat, 6> postprocess(const float* output, int origW, int origH);
+    std::array<cv::Mat, 6> postprocess(const float* output, int origW, int origH, const cv::Mat& frame);
+    
+    // New processing steps
+    std::array<cv::Mat, 6> applyConfidenceThreshold(const std::array<std::vector<float>, 6>& classProbs);
+    std::array<cv::Mat, 6> temporalSmooth(const std::array<cv::Mat, 6>& currentMasks, const cv::Mat& currentFrame);
+    void refineEdges(std::array<cv::Mat, 6>& masks, const cv::Mat& highResFrame);
+    cv::Mat morphologicalClean(const cv::Mat& mask);
+    
+    // Motion detection
+    float calculateMotion(const cv::Mat& currentFrame);
 };
